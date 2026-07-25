@@ -1,0 +1,103 @@
+from flask import Flask, Response
+from picamera2 import Picamera2
+import cv2
+import time
+
+app = Flask(__name__)
+
+# Initialise camera once
+picam2 = Picamera2()
+
+config = picam2.create_video_configuration(
+    main={"size": (640, 480), "format": "RGB888"}
+)
+
+picam2.configure(config)
+picam2.start()
+
+print(picam2.camera_configuration())
+
+# Allow camera to warm up
+time.sleep(2)
+
+detector = cv2.QRCodeDetector()
+
+
+def generate_frames():
+    while True:
+
+        # Capture frame from Picamera2
+        frame = picam2.capture_array()
+
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        # Detect QR code
+        data, bbox, _ = detector.detectAndDecode(frame)
+
+        if bbox is not None and len(bbox) > 0:
+
+            bbox = bbox.astype(int)
+
+            for i in range(len(bbox[0])):
+                pt1 = tuple(bbox[0][i])
+                pt2 = tuple(bbox[0][(i + 1) % len(bbox[0])])
+
+                cv2.line(frame, pt1, pt2, (0, 255, 0), 2)
+
+            if data:
+
+                cv2.putText(
+                    frame,
+                    f"QR: {data}",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 255, 0),
+                    2,
+                )
+
+                print("Detected QR:", data)
+
+        # Convert RGB (Picamera2) to BGR for JPEG encoding
+        #frame_bgr = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+        #gray = cv2.cvtColor(frame_bgr, cv2.COLOR_RGB2GRAY)
+
+        ret, buffer = cv2.imencode(".jpg", frame)
+
+        if not ret:
+            continue
+
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n\r\n"
+            + buffer.tobytes()
+            + b"\r\n"
+        )
+
+
+@app.route("/")
+def index():
+    return """
+    <html>
+        <head>
+            <title>QR Camera Stream</title>
+        </head>
+        <body>
+            <h1>Live QR Camera Stream</h1>
+            <img src="/video" width="640" height="480">
+        </body>
+    </html>
+    """
+
+
+@app.route("/video")
+def video():
+    return Response(
+        generate_frames(),
+        mimetype="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000, threaded=True)
